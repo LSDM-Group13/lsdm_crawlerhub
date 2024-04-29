@@ -1,10 +1,12 @@
 package main
 
 import (
+	"bufio"
 	"encoding/json"
 	"fmt"
 	"github.com/LSDM-Group13/lsdm_crawlerhub/api"
 	"github.com/LSDM-Group13/lsdm_crawlerhub/internal/crawler"
+	"golang.org/x/net/html"
 	"net/http"
 	url2 "net/url"
 	"strconv"
@@ -43,6 +45,59 @@ func (c *Crawler) requestCrawlJobs(numDomains int) {
 	fmt.Println(c.domainsToCrawl)
 }
 
+func crawlEveryNode(root *html.Node) {
+	nodeStack := []*html.Node{root}
+	for len(nodeStack) > 0 {
+		node := nodeStack[0]
+		nodeStack = nodeStack[1:]
+
+		switch nodeType := node.Type; nodeType {
+		case html.TextNode:
+			//fmt.Println(node.Data)
+		case html.ElementNode:
+			for _, attr := range node.Attr {
+				if attr.Key == "href" {
+					fmt.Println(attr.Val)
+				}
+			}
+
+		}
+		child := node.FirstChild
+		if child == nil {
+			continue
+		}
+
+		for sib := child; sib != nil; sib = sib.NextSibling {
+			nodeStack = append(nodeStack, sib)
+		}
+	}
+}
+
+func (c *Crawler) crawlNextDomain() {
+	domain := c.domainsToCrawl[len(c.domainsToCrawl)-1]
+	resp, err := http.Get(domain)
+	if err != nil {
+		fmt.Println(err)
+	}
+	fmt.Println(resp.Status)
+
+	s := bufio.NewReader(resp.Body)
+	root, err := html.Parse(s)
+	if err != nil {
+		fmt.Println(err)
+	}
+
+	//fmt.Println(root.Data)
+	crawlEveryNode(root)
+
+	c.domainsToCrawl = c.domainsToCrawl[:len(c.domainsToCrawl)-1]
+	c.domainsCrawled = append(c.domainsCrawled, domain)
+}
+
+func (c *Crawler) insertDomain(domain string) {
+	c.domainsToCrawl = append(c.domainsToCrawl, domain)
+}
+
 func main() {
 	crawler.HelloCrawler()
 	c := Crawler{
@@ -52,5 +107,8 @@ func main() {
 		domainsCrawled: nil,
 	}
 
-	c.requestCrawlJobs(2)
+	//c.requestCrawlJobs(2)
+	c.insertDomain("https://allstatehealth.com")
+	c.crawlNextDomain()
+
 }
