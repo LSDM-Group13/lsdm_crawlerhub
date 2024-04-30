@@ -12,11 +12,19 @@ import (
 	"strconv"
 )
 
+type pageURL string
+type wordCounts map[string]int
+
+type DomainData struct {
+	domainName string
+	pages      map[pageURL]wordCounts
+}
+
 type Crawler struct {
 	hubBaseUrl     string
 	maxDomains     int
 	domainsToCrawl []string
-	domainsCrawled []string
+	domainsCrawled []DomainData
 }
 
 func (c *Crawler) requestCrawlJobs(numDomains int) {
@@ -91,7 +99,11 @@ func (c *Crawler) crawlNextDomain() {
 	crawlEveryNode(root)
 
 	c.domainsToCrawl = c.domainsToCrawl[:len(c.domainsToCrawl)-1]
-	c.domainsCrawled = append(c.domainsCrawled, domain)
+	//TODO: construct real domainData bundle
+	c.domainsCrawled = append(c.domainsCrawled, DomainData{
+		domainName: "",
+		pages:      nil,
+	})
 }
 
 func (c *Crawler) insertDomain(domain string) {
