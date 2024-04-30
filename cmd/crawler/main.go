@@ -12,19 +12,26 @@ import (
 	"strconv"
 )
 
-type pageURL string
 type wordCounts map[string]int
+type domainNames []string
 
 type DomainData struct {
 	domainName string
-	pages      map[pageURL]wordCounts
+	pages      map[string]wordCounts
 }
 
 type Crawler struct {
 	hubBaseUrl     string
 	maxDomains     int
-	domainsToCrawl []string
+	domainsToCrawl domainNames
 	domainsCrawled []DomainData
+}
+
+func (dns *domainNames) popLast() string {
+	lastIdx := len(*dns) - 1
+	last := (*dns)[lastIdx]
+	*dns = (*dns)[:lastIdx]
+	return last
 }
 
 func (c *Crawler) requestCrawlJobs(numDomains int) {
@@ -53,7 +60,25 @@ func (c *Crawler) requestCrawlJobs(numDomains int) {
 	fmt.Println(c.domainsToCrawl)
 }
 
-func crawlEveryNode(root *html.Node) {
+func (c *Crawler) crawl(domain string) DomainData {
+	domainData := DomainData{
+		domainName: domain,
+		pages:      map[string]wordCounts{},
+	}
+	domainData.pages[domain] = wordCounts{}
+
+	resp, err := http.Get(domain)
+	if err != nil {
+		fmt.Println(err)
+	}
+	fmt.Println(resp.Status)
+
+	s := bufio.NewReader(resp.Body)
+	root, err := html.Parse(s)
+	if err != nil {
+		fmt.Println(err)
+	}
+
 	nodeStack := []*html.Node{root}
 	for len(nodeStack) > 0 {
 		node := nodeStack[0]
@@ -61,11 +86,14 @@ func crawlEveryNode(root *html.Node) {
 
 		switch nodeType := node.Type; nodeType {
 		case html.TextNode:
-			//fmt.Println(node.Data)
+			//TODO: make word-count dictionary
+			domainData.pages[domain]["a"] += 1
 		case html.ElementNode:
 			for _, attr := range node.Attr {
 				if attr.Key == "href" {
-					fmt.Println(attr.Val)
+					//TODO: filter out non-relative links ("https://....")
+					pageUrl := fmt.Sprintf("%s%s\n", domain, attr.Val)
+					domainData.pages[pageUrl] = wordCounts{}
 				}
 			}
 
@@ -79,31 +107,15 @@ func crawlEveryNode(root *html.Node) {
 			nodeStack = append(nodeStack, sib)
 		}
 	}
+
+	return domainData
 }
 
 func (c *Crawler) crawlNextDomain() {
-	domain := c.domainsToCrawl[len(c.domainsToCrawl)-1]
-	resp, err := http.Get(domain)
-	if err != nil {
-		fmt.Println(err)
-	}
-	fmt.Println(resp.Status)
+	domain := c.domainsToCrawl.popLast()
+	domainData := c.crawl(domain)
 
-	s := bufio.NewReader(resp.Body)
-	root, err := html.Parse(s)
-	if err != nil {
-		fmt.Println(err)
-	}
-
-	//fmt.Println(root.Data)
-	crawlEveryNode(root)
-
-	c.domainsToCrawl = c.domainsToCrawl[:len(c.domainsToCrawl)-1]
-	//TODO: construct real domainData bundle
-	c.domainsCrawled = append(c.domainsCrawled, DomainData{
-		domainName: "",
-		pages:      nil,
-	})
+	c.domainsCrawled = append(c.domainsCrawled, domainData)
 }
 
 func (c *Crawler) insertDomain(domain string) {
@@ -122,5 +134,6 @@ func main() {
 	//c.requestCrawlJobs(2)
 	c.insertDomain("https://allstatehealth.com")
 	c.crawlNextDomain()
+	fmt.Println(c.domainsCrawled[0])
 
 }
