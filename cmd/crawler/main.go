@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bufio"
 	"encoding/json"
 	"fmt"
 	"github.com/LSDM-Group13/lsdm_crawlerhub/api"
@@ -60,23 +59,35 @@ func (c *Crawler) requestCrawlJobs(numDomains int) {
 	fmt.Println(c.domainsToCrawl)
 }
 
-func (c *Crawler) crawl(domain string) DomainData {
+func requestPageNodes(url string) (*html.Node, error) {
+	resp, err := http.Get(url)
+	if err != nil {
+		return nil, err
+	}
+
+	if resp.Status != "200 OK" {
+		return nil, fmt.Errorf("not 200 OK")
+	}
+
+	defer resp.Body.Close()
+	root, err := html.Parse(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	return root, nil
+}
+
+func (c *Crawler) crawl(domain string) (DomainData, error) {
 	domainData := DomainData{
 		domainName: domain,
 		pages:      map[string]wordCounts{},
 	}
 	domainData.pages[domain] = wordCounts{}
 
-	resp, err := http.Get(domain)
+	root, err := requestPageNodes(domain)
 	if err != nil {
-		fmt.Println(err)
-	}
-	fmt.Println(resp.Status)
-
-	s := bufio.NewReader(resp.Body)
-	root, err := html.Parse(s)
-	if err != nil {
-		fmt.Println(err)
+		return domainData, err
 	}
 
 	nodeStack := []*html.Node{root}
@@ -96,8 +107,8 @@ func (c *Crawler) crawl(domain string) DomainData {
 					domainData.pages[pageUrl] = wordCounts{}
 				}
 			}
-
 		}
+
 		child := node.FirstChild
 		if child == nil {
 			continue
@@ -108,14 +119,17 @@ func (c *Crawler) crawl(domain string) DomainData {
 		}
 	}
 
-	return domainData
+	return domainData, nil
 }
 
-func (c *Crawler) crawlNextDomain() {
+func (c *Crawler) crawlNextDomain() (err error) {
 	domain := c.domainsToCrawl.popLast()
-	domainData := c.crawl(domain)
+	domainData, err := c.crawl(domain)
+	if err == nil {
+		c.domainsCrawled = append(c.domainsCrawled, domainData)
+	}
 
-	c.domainsCrawled = append(c.domainsCrawled, domainData)
+	return err
 }
 
 func (c *Crawler) insertDomain(domain string) {
@@ -133,7 +147,10 @@ func main() {
 
 	//c.requestCrawlJobs(2)
 	c.insertDomain("https://allstatehealth.com")
-	c.crawlNextDomain()
+	err := c.crawlNextDomain()
+	if err != nil {
+		fmt.Println("Couldn't crawl: ", err)
+	}
 	fmt.Println(c.domainsCrawled[0])
 
 }
