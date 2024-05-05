@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 )
 
 type PageData struct {
@@ -191,6 +192,7 @@ func (c *Crawler) crawlNextDomain() (domainData api.DomainData, err error) {
 	domainData = api.DomainData{
 		DomainName: domainName,
 		Pages:      map[string]*string{},
+		TimeStamp:  time.Now(),
 	}
 
 	link := "https://" + domainName

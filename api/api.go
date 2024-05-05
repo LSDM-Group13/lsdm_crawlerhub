@@ -1,8 +1,11 @@
 package api
 
+import "time"
+
 type DomainData struct {
 	DomainName string
 	Pages      map[string]*string
+	TimeStamp  time.Time
 }
 
 func (dd DomainData) TotalSize() int {

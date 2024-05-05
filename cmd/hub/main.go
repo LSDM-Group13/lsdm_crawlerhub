@@ -114,6 +114,12 @@ func postDomainDataToDB(domainData api.DomainData) error {
 		}
 	}
 
+	_, err = db.Exec("UPDATE Host SET LastCrawledDate = ? WHERE HostID = ?", domainData.TimeStamp, hostID)
+	if err != nil {
+		fmt.Println("failed to update LastCrawledDate")
+		return err
+	}
+
 	fmt.Println("Page data inserted into WebPage table successfully")
 	return nil
 }
