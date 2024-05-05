@@ -49,7 +49,12 @@ func containsScriptOrStyleAncestor(node *html.Node) bool {
 }
 
 func requestPageNodes(url string) (*html.Node, error) {
-	resp, err := http.Get(url)
+	client := &http.Client{
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			return nil // Always return nil to allow redirects
+		},
+	}
+	resp, err := client.Get(url)
 	if err != nil {
 		return nil, err
 	}
@@ -162,7 +167,7 @@ func (c *Crawler) crawl(pageUrl string) (PageData, error) {
 					}
 
 					var link string
-					if attr.Val[0] == '/' {
+					if len(attr.Val) > 0 && attr.Val[0] == '/' {
 						parsedUrl, _ := url2.Parse(pageUrl)
 						link = parsedUrl.Scheme + "://" + parsedUrl.Host + attr.Val
 					} else {
@@ -195,15 +200,21 @@ func (c *Crawler) crawlNextDomain() (domainData api.DomainData, err error) {
 		TimeStamp:  time.Now(),
 	}
 
-	link := "https://" + domainName
+	maxFollow := 20
+	link := "http://" + domainName
 	linksFound := []string{link}
-	for len(linksFound) > 0 {
+	for len(linksFound) > 0 && maxFollow > 0 {
 		linksFound, link = PopLast(linksFound)
 		if domainData.Pages[link] != nil {
 			continue
 		}
 
+		if !strings.HasSuffix(link, "/") {
+			link += "/"
+		}
+
 		pageData, err := c.crawl(link)
+		maxFollow -= 1
 		if err != nil {
 			fmt.Println("error crawling ", link, ": ", err)
 			continue
@@ -232,18 +243,26 @@ func main() {
 		domainsToCrawl: nil,
 		domainsCrawled: nil,
 	}
+	//c.insertDomain("azaviculture.org")
+	for {
+		numJobs := 5
+		c.requestCrawlJobs(numJobs)
+		if len(c.domainsToCrawl) == 0 {
+			break
+		}
+		for _ = range c.domainsToCrawl {
+			domainData, err := c.crawlNextDomain()
+			if err != nil {
+				fmt.Println("Couldn't crawl: ", err)
+			}
+			fmt.Println("domain data size (bytes): ", domainData.TotalSize(), "\ndomain name: ", domainData.DomainName)
+		}
 
-	//c.requestCrawlJobs(2)
-	c.insertDomain("allstatehealth.com")
-	domainData, err := c.crawlNextDomain()
-	if err != nil {
-		fmt.Println("Couldn't crawl: ", err)
-	}
-	fmt.Println("domain data size (bytes): ", domainData.TotalSize())
-	fmt.Println("domain name: ", domainData.DomainName)
-
-	err = c.postNextDomainData()
-	if err != nil {
-		fmt.Println("couldn't post domain data: ", err)
+		for _ = range len(c.domainsCrawled) {
+			err := c.postNextDomainData()
+			if err != nil {
+				fmt.Println("couldn't post domain data: ", err)
+			}
+		}
 	}
 }
