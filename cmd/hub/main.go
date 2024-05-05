@@ -1,11 +1,12 @@
 package main
 
 import (
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"github.com/LSDM-Group13/lsdm_crawlerhub/api"
-	"github.com/LSDM-Group13/lsdm_crawlerhub/internal/hub"
 	"github.com/gin-gonic/gin"
+	_ "github.com/go-sql-driver/mysql"
 	"io"
 	"math/rand/v2"
 	"net/http"
@@ -49,16 +50,84 @@ func postCrawlData(c *gin.Context) {
 	}
 
 	fmt.Println("Received domainData:", domainData)
+	err = postDomainDataToDB(domainData)
+	if err != nil {
+		fmt.Println(err)
+	}
+}
+
+func printDBTestData() {
+	dataSourceName := "root@tcp(localhost:3306)/LSDM_Group_Project"
+	db, err := sql.Open("mysql", dataSourceName)
+	if err != nil {
+		fmt.Println("couldn't open")
+		fmt.Println(err)
+	}
+	defer db.Close()
+	fmt.Println("Connected to MySQL database")
+
+	query := "SELECT WebPageID, HostID, WebPageURL, Data FROM WebPage WHERE Data LIKE ?"
+	rows, err := db.Query(query, "%green%")
+	if err != nil {
+		fmt.Println(err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var webpageID, hostID int
+		var webpageURL, data string
+		if err := rows.Scan(&webpageID, &hostID, &webpageURL, &data); err != nil {
+			fmt.Println(err)
+		}
+		fmt.Printf("%d, %d, %s, %s\n", webpageID, hostID, webpageURL, data)
+	}
+	if err := rows.Err(); err != nil {
+		fmt.Println(err)
+	}
+
+	fmt.Println("Search completed successfully")
+}
+
+func postDomainDataToDB(domainData api.DomainData) error {
+	dataSourceName := "root@tcp(localhost:3306)/LSDM_Group_Project"
+	db, err := sql.Open("mysql", dataSourceName)
+	if err != nil {
+		fmt.Println("couldn't open")
+		fmt.Println(err)
+		return err
+	}
+	defer db.Close()
+	fmt.Println("Connected to MySQL database")
+
+	var hostID int
+	err = db.QueryRow("SELECT HostID FROM Host WHERE DomainName = ?", domainData.DomainName).Scan(&hostID)
+	if err != nil {
+		fmt.Println("failed to find HostID")
+		return err
+	}
+
+	for url, data := range domainData.Pages {
+		_, err := db.Exec("INSERT INTO WebPage (HostID, WebPageURL, Data) VALUES (?, ?, ?)", hostID, url, data)
+		if err != nil {
+			fmt.Println("failed to insert ", url)
+			return err
+		}
+	}
+
+	fmt.Println("Page data inserted into WebPage table successfully")
+	return nil
 }
 
 func main() {
-	hub.HelloHub()
-
 	router := gin.Default()
 	router.GET("/getCrawlJobs", getCrawlJobs)
 	router.POST("/postCrawlData", postCrawlData)
 	err := router.Run("localhost:8869")
 	if err != nil {
 		fmt.Println("error running router: ", err)
+	}
+
+	if err != nil {
+		println(err)
 	}
 }
