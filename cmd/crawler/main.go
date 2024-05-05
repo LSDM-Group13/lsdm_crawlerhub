@@ -8,11 +8,10 @@ import (
 	"golang.org/x/net/html"
 	"net/http"
 	url2 "net/url"
+	"regexp"
 	"strconv"
 	"strings"
 )
-
-type domainNames []string
 
 type PageData struct {
 	pageUrl  string
@@ -23,15 +22,15 @@ type PageData struct {
 type Crawler struct {
 	hubBaseUrl     string
 	maxDomains     int
-	domainsToCrawl domainNames
+	domainsToCrawl []string
 	domainsCrawled []api.DomainData
 }
 
-func (dns *domainNames) popLast() string {
-	lastIdx := len(*dns) - 1
-	last := (*dns)[lastIdx]
-	*dns = (*dns)[:lastIdx]
-	return last
+func PopLast[T any](s []T) ([]T, T) {
+	lastIdx := len(s) - 1
+	last := s[lastIdx]
+	newSlice := s[:lastIdx]
+	return newSlice, last
 }
 
 func isValidLink(l string) bool {
@@ -76,7 +75,6 @@ func (c *Crawler) requestCrawlJobs(numDomains int) {
 	query := url.Query()
 	query.Set(api.GetCrawlJobs.Parameters.NumDomains, strconv.Itoa(numDomains))
 	url.RawQuery = query.Encode()
-	fmt.Println(url.String())
 
 	resp, err := http.Get(url.String())
 	if err != nil {
@@ -88,14 +86,14 @@ func (c *Crawler) requestCrawlJobs(numDomains int) {
 	if err != nil {
 		fmt.Println("error decoding response: ", err)
 	}
-
 	c.domainsToCrawl = crawlJobs.Domains
-	fmt.Println(c.domainsToCrawl)
+
+	fmt.Println("domains received: ", c.domainsToCrawl)
 }
 
 func (c *Crawler) postNextDomainData() error {
-	domainData := c.domainsCrawled[len(c.domainsCrawled)-1]
-	c.domainsCrawled = c.domainsCrawled[:len(c.domainsCrawled)-1]
+	var domainData api.DomainData
+	c.domainsCrawled, domainData = PopLast(c.domainsCrawled)
 
 	jsonData, err := json.Marshal(domainData)
 	if err != nil {
@@ -138,6 +136,8 @@ func (c *Crawler) crawl(pageUrl string) (PageData, error) {
 		return pageData, err
 	}
 
+	leadingWhitespace := regexp.MustCompile(`^\s+`)
+
 	nodeStack := []*html.Node{root}
 	for len(nodeStack) > 0 {
 		node := nodeStack[0]
@@ -148,7 +148,10 @@ func (c *Crawler) crawl(pageUrl string) (PageData, error) {
 			if !containsScriptOrStyleAncestor(node) {
 				text := strings.ReplaceAll(node.Data, "\n", "")
 				text = strings.ReplaceAll(text, "\t", "")
-				*pageData.textData += text + " "
+				text = leadingWhitespace.ReplaceAllString(node.Data, "")
+				if len(text) > 0 {
+					*pageData.textData += text + " "
+				}
 			}
 		case html.ElementNode:
 			for _, attr := range node.Attr {
@@ -183,20 +186,27 @@ func (c *Crawler) crawl(pageUrl string) (PageData, error) {
 }
 
 func (c *Crawler) crawlNextDomain() (domainData api.DomainData, err error) {
-	domainUrl := c.domainsToCrawl.popLast()
+	var domainName string
+	c.domainsToCrawl, domainName = PopLast(c.domainsToCrawl)
 	domainData = api.DomainData{
-		DomainName: domainUrl,
+		DomainName: domainName,
 		Pages:      map[string]*string{},
 	}
 
-	linksFound := domainNames{domainUrl}
+	link := "https://" + domainName
+	linksFound := []string{link}
 	for len(linksFound) > 0 {
-		link := linksFound.popLast()
+		linksFound, link = PopLast(linksFound)
 		if domainData.Pages[link] != nil {
 			continue
 		}
 
-		pageData, _ := c.crawl(link)
+		pageData, err := c.crawl(link)
+		if err != nil {
+			fmt.Println("error crawling ", link, ": ", err)
+			continue
+		}
+
 		domainData.Pages[link] = pageData.textData
 		for _, newLink := range pageData.links {
 			if domainData.Pages[newLink] == nil {
@@ -204,10 +214,7 @@ func (c *Crawler) crawlNextDomain() (domainData api.DomainData, err error) {
 			}
 		}
 	}
-
-	if err == nil {
-		c.domainsCrawled = append(c.domainsCrawled, domainData)
-	}
+	c.domainsCrawled = append(c.domainsCrawled, domainData)
 
 	return domainData, err
 }
@@ -225,12 +232,16 @@ func main() {
 	}
 
 	//c.requestCrawlJobs(2)
-	c.insertDomain("https://allstatehealth.com/")
+	c.insertDomain("allstatehealth.com")
 	domainData, err := c.crawlNextDomain()
 	if err != nil {
 		fmt.Println("Couldn't crawl: ", err)
 	}
 	fmt.Println("domain data size (bytes): ", domainData.TotalSize())
+	fmt.Println("domain name: ", domainData.DomainName)
 
-	c.postNextDomainData()
+	err = c.postNextDomainData()
+	if err != nil {
+		fmt.Println("couldn't post domain data: ", err)
+	}
 }
