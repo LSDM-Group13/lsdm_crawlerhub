@@ -14,11 +14,12 @@ if not connection.is_connected():
 search_term = sys.argv[1]
 
 cursor = connection.cursor()
-query = "select * from WebPage where Data like %s"
+# query = "select * from WebPage where Data like %s"
+query = f"SELECT WebPageURL, SUBSTRING(Data, GREATEST(INSTR(Data, '{search_term}') - 25, 1), LEAST(50, CHAR_LENGTH(Data) - GREATEST(INSTR(Data, '{search_term}') - 25, 1))) AS SubstringAroundMatch FROM WebPage WHERE Data LIKE %s;"
 cursor.execute(query, ('%' + search_term + '%',))
 
 print(f"Web pages with '{search_term}' in the data:")
-for (webpage_id, host_id, webpage_url, data) in cursor:
+for (webpage_url, data) in cursor:
     print(f"{webpage_url}: {data}")
 
 cursor.close()
