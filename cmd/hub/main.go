@@ -8,19 +8,43 @@ import (
 	"github.com/gin-gonic/gin"
 	_ "github.com/go-sql-driver/mysql"
 	"io"
-	"math/rand/v2"
 	"net/http"
 	"strconv"
 )
 
-var domains = []string{"fakedomain1", "fakedomain2", "fakedomain3", "fakedomain4", "fakedomain5"}
-
-func selectDomains(numJobs int) []string {
+func selectDomains(numJobs int) ([]string, error) {
 	var domainsSelected []string
-	for range numJobs {
-		domainsSelected = append(domainsSelected, domains[rand.IntN(len(domains))])
+
+	dataSourceName := "root@tcp(localhost:3306)/LSDM_Group_Project"
+	db, err := sql.Open("mysql", dataSourceName)
+	if err != nil {
+		return nil, err
 	}
-	return domainsSelected
+	defer db.Close()
+
+	query := "SELECT DomainName FROM Host WHERE LastCrawledDate IS NULL LIMIT ?"
+	rows, err := db.Query(query, numJobs)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var domainName string
+		if err := rows.Scan(&domainName); err != nil {
+			return nil, err
+		}
+		domainsSelected = append(domainsSelected, domainName)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	if len(domainsSelected) == 0 {
+		return domainsSelected, fmt.Errorf("no more domains to crawl")
+	}
+
+	return domainsSelected, nil
 }
 
 func getCrawlJobs(c *gin.Context) {
@@ -32,7 +56,12 @@ func getCrawlJobs(c *gin.Context) {
 	if err != nil {
 		numDomains = 1
 	}
-	jobs := api.CrawlJobs{Domains: selectDomains(numDomains)}
+	newDomains, err := selectDomains(numDomains)
+	if err != nil {
+		fmt.Println("couldn't get jobs from db")
+		return
+	}
+	jobs := api.CrawlJobs{Domains: newDomains}
 	c.IndentedJSON(http.StatusOK, jobs)
 }
 
@@ -135,5 +164,12 @@ func main() {
 
 	if err != nil {
 		println(err)
+	}
+
+	domains, err := selectDomains(5)
+	if err != nil {
+		fmt.Println(err)
+	} else {
+		fmt.Println(domains)
 	}
 }
