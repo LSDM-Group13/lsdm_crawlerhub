@@ -51,19 +51,18 @@ func (c *Crawler) insertDomain(domain string) {
 func ContainsLink(links []*url.URL, newLink *url.URL) bool {
 	newLinkStr := newLink.String()
 	for _, link := range links {
-		linkStr := link.String()
-		if linkStr == newLinkStr {
+		if link.String() == newLinkStr {
 			return true
 		}
 	}
 	return false
 }
 
-func (c *Crawler) requestCrawlJobs(numDomains int) {
+func (c *Crawler) requestCrawlJobs(numDomains int) error {
 	hubURL, err := url.Parse(c.hubBaseUrl + api.GetCrawlJobs.URL)
 	if err != nil {
 		fmt.Println("error forming hubURL: ", err)
-		return
+		return err
 	}
 	query := hubURL.Query()
 	query.Set(api.GetCrawlJobs.Parameters.NumDomains, strconv.Itoa(numDomains))
@@ -72,16 +71,19 @@ func (c *Crawler) requestCrawlJobs(numDomains int) {
 	resp, err := http.Get(hubURL.String())
 	if err != nil {
 		fmt.Println("error making request: ", err)
+		return err
 	}
 
 	var crawlJobs api.CrawlJobs
 	err = json.NewDecoder(resp.Body).Decode(&crawlJobs)
 	if err != nil {
 		fmt.Println("error decoding response: ", err)
+		return err
 	}
 	c.domainsToCrawl = crawlJobs.Domains
 
 	fmt.Println("domains received: ", c.domainsToCrawl)
+	return nil
 }
 
 func (c *Crawler) crawlNextDomain() (api.DomainData, error) {
@@ -93,7 +95,7 @@ func (c *Crawler) crawlNextDomain() (api.DomainData, error) {
 		TimeStamp:  time.Now(),
 	}
 
-	link, err := url.Parse("https://" + domainName)
+	link, err := url.Parse("https://" + domainName + "/")
 	if err != nil {
 		fmt.Println("invalid domain name: ", domainName)
 		return domainData, err
@@ -118,11 +120,14 @@ func (c *Crawler) crawlNextDomain() (api.DomainData, error) {
 			}
 		}
 	}
-
 	domainData.RemoveBlankPages()
 	c.domainsCrawled = append(c.domainsCrawled, domainData)
 
 	return domainData, nil
+}
+
+func isValidLink(l string) bool {
+	return !strings.ContainsAny(l, "?#") && !strings.Contains(l, "wp-content") && !strings.HasSuffix(l, ".css")
 }
 
 func (c *Crawler) crawl(pageUrl *url.URL) (PageData, error) {
@@ -141,9 +146,9 @@ func (c *Crawler) crawl(pageUrl *url.URL) (PageData, error) {
 	iFrames := regexp.MustCompile(`<iframe[^>]*>(.*?)<\/iframe>`)
 
 	nodeStack := []*html.Node{root}
+	var node *html.Node
 	for len(nodeStack) > 0 {
-		node := nodeStack[0]
-		nodeStack = nodeStack[1:]
+		nodeStack, node = PopLast(nodeStack)
 
 		switch nodeType := node.Type; nodeType {
 		case html.TextNode:
@@ -160,7 +165,7 @@ func (c *Crawler) crawl(pageUrl *url.URL) (PageData, error) {
 		case html.ElementNode:
 			for _, attr := range node.Attr {
 				if attr.Key == "href" {
-					if strings.ContainsAny(attr.Val, "?#") {
+					if !isValidLink(attr.Val) {
 						continue
 					}
 
