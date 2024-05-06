@@ -4,14 +4,22 @@ import "time"
 
 type DomainData struct {
 	DomainName string
-	Pages      map[string]*string
+	Pages      map[string]string
 	TimeStamp  time.Time
+}
+
+func (dd *DomainData) RemoveBlankPages() {
+	for k, v := range dd.Pages {
+		if v == "" {
+			delete(dd.Pages, k)
+		}
+	}
 }
 
 func (dd DomainData) TotalSize() int {
 	totalSize := 0
 	for _, p := range dd.Pages {
-		totalSize += len(*p)
+		totalSize += len(p)
 	}
 
 	return totalSize
