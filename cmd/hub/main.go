@@ -20,14 +20,24 @@ func selectDomains(numJobs int) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer db.Close()
+	defer func(db *sql.DB) {
+		err := db.Close()
+		if err != nil {
+			fmt.Println("couldn't close database connection")
+		}
+	}(db)
 
 	query := "SELECT DomainName FROM Host WHERE LastCrawledDate IS NULL LIMIT ?"
 	rows, err := db.Query(query, numJobs)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func(rows *sql.Rows) {
+		err := rows.Close()
+		if err != nil {
+			fmt.Println("couldn't close database connection")
+		}
+	}(rows)
 
 	for rows.Next() {
 		var domainName string
@@ -92,7 +102,12 @@ func printDBTestData() {
 		fmt.Println("couldn't open")
 		fmt.Println(err)
 	}
-	defer db.Close()
+	defer func(db *sql.DB) {
+		err := db.Close()
+		if err != nil {
+			fmt.Println("couldn't close database connection")
+		}
+	}(db)
 	fmt.Println("Connected to MySQL database")
 
 	query := "SELECT WebPageID, HostID, WebPageURL, Data FROM WebPage WHERE Data LIKE ?"
@@ -100,7 +115,12 @@ func printDBTestData() {
 	if err != nil {
 		fmt.Println(err)
 	}
-	defer rows.Close()
+	defer func(rows *sql.Rows) {
+		err := rows.Close()
+		if err != nil {
+			fmt.Println("couldn't close database connection")
+		}
+	}(rows)
 
 	for rows.Next() {
 		var webpageID, hostID int
@@ -125,7 +145,12 @@ func postDomainDataToDB(domainData api.DomainData) error {
 		fmt.Println(err)
 		return err
 	}
-	defer db.Close()
+	defer func(db *sql.DB) {
+		err := db.Close()
+		if err != nil {
+			fmt.Println("couldn't close database connection")
+		}
+	}(db)
 	fmt.Println("Connected to MySQL database")
 
 	var hostID int
