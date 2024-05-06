@@ -6,8 +6,9 @@ import (
 	"fmt"
 	"github.com/LSDM-Group13/lsdm_crawlerhub/api"
 	"golang.org/x/net/html"
+	"io"
 	"net/http"
-	url2 "net/url"
+	"net/url"
 	"regexp"
 	"strconv"
 	"strings"
@@ -15,9 +16,9 @@ import (
 )
 
 type PageData struct {
-	pageUrl  string
-	textData *string
-	links    []string
+	pageUrl  *url.URL
+	textData string
+	links    []*url.URL
 }
 
 type Crawler struct {
@@ -34,11 +35,6 @@ func PopLast[T any](s []T) ([]T, T) {
 	return newSlice, last
 }
 
-func isValidLink(l string) bool {
-	return !(strings.ContainsAny(l, ".:#?") ||
-		strings.Contains(l, "wp-content"))
-}
-
 func containsScriptOrStyleAncestor(node *html.Node) bool {
 	for n := node; n != nil; n = n.Parent {
 		if n.Type == html.ElementNode && (n.Data == "script" || n.Data == "style") {
@@ -48,43 +44,34 @@ func containsScriptOrStyleAncestor(node *html.Node) bool {
 	return false
 }
 
-func requestPageNodes(url string) (*html.Node, error) {
-	client := &http.Client{
-		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			return nil // Always return nil to allow redirects
-		},
-	}
-	resp, err := client.Get(url)
-	if err != nil {
-		return nil, err
-	}
+func (c *Crawler) insertDomain(domain string) {
+	c.domainsToCrawl = append(c.domainsToCrawl, domain)
+}
 
-	if resp.Status != "200 OK" {
-		return nil, fmt.Errorf("not 200 OK")
+func ContainsLink(links []*url.URL, newLink *url.URL) bool {
+	newLinkStr := newLink.String()
+	for _, link := range links {
+		linkStr := link.String()
+		if linkStr == newLinkStr {
+			return true
+		}
 	}
-
-	defer resp.Body.Close()
-	root, err := html.Parse(resp.Body)
-	if err != nil {
-		return nil, err
-	}
-
-	return root, nil
+	return false
 }
 
 func (c *Crawler) requestCrawlJobs(numDomains int) {
-	url, err := url2.Parse(c.hubBaseUrl + api.GetCrawlJobs.URL)
+	hubURL, err := url.Parse(c.hubBaseUrl + api.GetCrawlJobs.URL)
 	if err != nil {
-		fmt.Println("error forming url: ", err)
+		fmt.Println("error forming hubURL: ", err)
 		return
 	}
-	query := url.Query()
+	query := hubURL.Query()
 	query.Set(api.GetCrawlJobs.Parameters.NumDomains, strconv.Itoa(numDomains))
-	url.RawQuery = query.Encode()
+	hubURL.RawQuery = query.Encode()
 
-	resp, err := http.Get(url.String())
+	resp, err := http.Get(hubURL.String())
 	if err != nil {
-		fmt.Println("error make request: ", err)
+		fmt.Println("error making request: ", err)
 	}
 
 	var crawlJobs api.CrawlJobs
@@ -95,6 +82,144 @@ func (c *Crawler) requestCrawlJobs(numDomains int) {
 	c.domainsToCrawl = crawlJobs.Domains
 
 	fmt.Println("domains received: ", c.domainsToCrawl)
+}
+
+func (c *Crawler) crawlNextDomain() (api.DomainData, error) {
+	var domainName string
+	c.domainsToCrawl, domainName = PopLast(c.domainsToCrawl)
+	domainData := api.DomainData{
+		DomainName: domainName,
+		Pages:      map[string]string{},
+		TimeStamp:  time.Now(),
+	}
+
+	link, err := url.Parse("https://" + domainName)
+	if err != nil {
+		fmt.Println("invalid domain name: ", domainName)
+		return domainData, err
+	}
+
+	linksFound := []*url.URL{link}
+	for maxFollow := 20; len(linksFound) > 0 && maxFollow > 0; maxFollow -= 1 {
+		linksFound, link = PopLast(linksFound)
+
+		time.Sleep(1 * time.Second)
+		pageData, err := c.crawl(link)
+		if err != nil {
+			domainData.Pages[link.String()] = ""
+			fmt.Println("error crawling ", link, ": ", err)
+			continue
+		}
+
+		domainData.Pages[link.String()] = pageData.textData
+		for _, newLink := range pageData.links {
+			if _, ok := domainData.Pages[newLink.String()]; !ok && !ContainsLink(linksFound, newLink) {
+				linksFound = append(linksFound, newLink)
+			}
+		}
+	}
+
+	domainData.RemoveBlankPages()
+	c.domainsCrawled = append(c.domainsCrawled, domainData)
+
+	return domainData, nil
+}
+
+func (c *Crawler) crawl(pageUrl *url.URL) (PageData, error) {
+	fmt.Println("Crawling ", pageUrl)
+	pageData := PageData{
+		pageUrl:  pageUrl,
+		textData: "",
+		links:    []*url.URL{},
+	}
+	root, err := requestPageNodes(pageUrl)
+	if err != nil {
+		return pageData, err
+	}
+
+	leadingWhitespace := regexp.MustCompile(`^\s+`)
+	iFrames := regexp.MustCompile(`<iframe[^>]*>(.*?)<\/iframe>`)
+
+	nodeStack := []*html.Node{root}
+	for len(nodeStack) > 0 {
+		node := nodeStack[0]
+		nodeStack = nodeStack[1:]
+
+		switch nodeType := node.Type; nodeType {
+		case html.TextNode:
+			if !containsScriptOrStyleAncestor(node) {
+				text := strings.ReplaceAll(node.Data, "\n", "")
+				text = strings.ReplaceAll(text, "\t", "")
+				text = leadingWhitespace.ReplaceAllString(text, "")
+				text = iFrames.ReplaceAllString(text, "")
+
+				if len(text) > 0 {
+					pageData.textData += text + " "
+				}
+			}
+		case html.ElementNode:
+			for _, attr := range node.Attr {
+				if attr.Key == "href" {
+					if strings.ContainsAny(attr.Val, "?#") {
+						continue
+					}
+
+					link, err := pageUrl.Parse(attr.Val)
+					if err != nil {
+						fmt.Println("failed to parse link: ", pageUrl.String(), " + ", attr.Val)
+						continue
+					}
+
+					if link.Host == pageUrl.Host && !ContainsLink(pageData.links, link) {
+						pageData.links = append(pageData.links, link)
+					}
+				}
+			}
+		}
+
+		child := node.FirstChild
+		if child == nil {
+			continue
+		}
+
+		for sib := child; sib != nil; sib = sib.NextSibling {
+			nodeStack = append(nodeStack, sib)
+		}
+	}
+
+	return pageData, nil
+}
+
+func requestPageNodes(url *url.URL) (*html.Node, error) {
+	client := &http.Client{
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			return nil // Always return nil to allow redirects
+		},
+	}
+
+	req, err := http.NewRequest("GET", url.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.3")
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+
+	defer func(Body io.ReadCloser) {
+		err := Body.Close()
+		if err != nil {
+			fmt.Println("couldn't close response reader")
+		}
+	}(resp.Body)
+
+	root, err := html.Parse(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	return root, nil
 }
 
 func (c *Crawler) postNextDomainData() error {
@@ -120,7 +245,12 @@ func (c *Crawler) postNextDomainData() error {
 		fmt.Println("Error sending HTTP request:", err)
 		return err
 	}
-	defer resp.Body.Close()
+	defer func(Body io.ReadCloser) {
+		err := Body.Close()
+		if err != nil {
+			fmt.Println("couldn't close response reader")
+		}
+	}(resp.Body)
 
 	if resp.StatusCode != http.StatusOK {
 		fmt.Println("Error:", resp.Status)
@@ -130,112 +260,6 @@ func (c *Crawler) postNextDomainData() error {
 	return nil
 }
 
-func (c *Crawler) crawl(pageUrl string) (PageData, error) {
-	fmt.Println("Crawling ", pageUrl)
-	pageData := PageData{
-		pageUrl:  pageUrl,
-		textData: new(string),
-		links:    []string{},
-	}
-	root, err := requestPageNodes(pageUrl)
-	if err != nil {
-		return pageData, err
-	}
-
-	leadingWhitespace := regexp.MustCompile(`^\s+`)
-
-	nodeStack := []*html.Node{root}
-	for len(nodeStack) > 0 {
-		node := nodeStack[0]
-		nodeStack = nodeStack[1:]
-
-		switch nodeType := node.Type; nodeType {
-		case html.TextNode:
-			if !containsScriptOrStyleAncestor(node) {
-				text := strings.ReplaceAll(node.Data, "\n", "")
-				text = strings.ReplaceAll(text, "\t", "")
-				text = leadingWhitespace.ReplaceAllString(node.Data, "")
-				if len(text) > 0 {
-					*pageData.textData += text + " "
-				}
-			}
-		case html.ElementNode:
-			for _, attr := range node.Attr {
-				if attr.Key == "href" {
-					if !isValidLink(attr.Val) {
-						continue
-					}
-
-					var link string
-					if len(attr.Val) > 0 && attr.Val[0] == '/' {
-						parsedUrl, _ := url2.Parse(pageUrl)
-						link = parsedUrl.Scheme + "://" + parsedUrl.Host + attr.Val
-					} else {
-						link = pageUrl + attr.Val
-					}
-					pageData.links = append(pageData.links, link)
-				}
-			}
-		}
-
-		child := node.FirstChild
-		if child == nil {
-			continue
-		}
-
-		for sib := child; sib != nil; sib = sib.NextSibling {
-			nodeStack = append(nodeStack, sib)
-		}
-	}
-
-	return pageData, nil
-}
-
-func (c *Crawler) crawlNextDomain() (domainData api.DomainData, err error) {
-	var domainName string
-	c.domainsToCrawl, domainName = PopLast(c.domainsToCrawl)
-	domainData = api.DomainData{
-		DomainName: domainName,
-		Pages:      map[string]*string{},
-		TimeStamp:  time.Now(),
-	}
-
-	maxFollow := 20
-	link := "http://" + domainName
-	linksFound := []string{link}
-	for len(linksFound) > 0 && maxFollow > 0 {
-		linksFound, link = PopLast(linksFound)
-		if domainData.Pages[link] != nil {
-			continue
-		}
-
-		if !strings.HasSuffix(link, "/") {
-			link += "/"
-		}
-
-		pageData, err := c.crawl(link)
-		maxFollow -= 1
-		if err != nil {
-			fmt.Println("error crawling ", link, ": ", err)
-			continue
-		}
-
-		domainData.Pages[link] = pageData.textData
-		for _, newLink := range pageData.links {
-			if domainData.Pages[newLink] == nil {
-				linksFound = append(linksFound, newLink)
-			}
-		}
-	}
-	c.domainsCrawled = append(c.domainsCrawled, domainData)
-
-	return domainData, err
-}
-
-func (c *Crawler) insertDomain(domain string) {
-	c.domainsToCrawl = append(c.domainsToCrawl, domain)
-}
-
 func main() {
 	c := Crawler{
 		hubBaseUrl:     "http://localhost:8869",
@@ -243,26 +267,33 @@ func main() {
 		domainsToCrawl: nil,
 		domainsCrawled: nil,
 	}
-	//c.insertDomain("azaviculture.org")
-	for {
-		numJobs := 5
-		c.requestCrawlJobs(numJobs)
-		if len(c.domainsToCrawl) == 0 {
-			break
-		}
-		for _ = range c.domainsToCrawl {
-			domainData, err := c.crawlNextDomain()
-			if err != nil {
-				fmt.Println("Couldn't crawl: ", err)
-			}
-			fmt.Println("domain data size (bytes): ", domainData.TotalSize(), "\ndomain name: ", domainData.DomainName)
-		}
 
-		for _ = range len(c.domainsCrawled) {
-			err := c.postNextDomainData()
-			if err != nil {
-				fmt.Println("couldn't post domain data: ", err)
-			}
-		}
+	c.insertDomain("allstatehealth.com")
+	dd, e := c.crawlNextDomain()
+	if e != nil {
+		fmt.Println(e)
 	}
+	fmt.Println(dd)
+
+	//	for {
+	//numJobs := 5
+	//c.requestCrawlJobs(numJobs)
+	//if len(c.domainsToCrawl) == 0 {
+	//	break
+	//}
+	//for _ = range c.domainsToCrawl {
+	//	domainData, err := c.crawlNextDomain()
+	//	if err != nil {
+	//		fmt.Println("Couldn't crawl: ", err)
+	//	}
+	//	fmt.Println("domain data size (bytes): ", domainData.TotalSize(), "\ndomain name: ", domainData.DomainName)
+	//}
+	//
+	//for _ = range len(c.domainsCrawled) {
+	//	err := c.postNextDomainData()
+	//	if err != nil {
+	//		fmt.Println("couldn't post domain data: ", err)
+	//	}
+	//}
+	//	}
 }
