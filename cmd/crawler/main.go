@@ -360,7 +360,7 @@ func main() {
 	//}
 	//fmt.Println(dd)
 
-	numJobs := 5
+	numJobs := 1
 	c.requestCrawlJobs(numJobs)
 	for range c.domainsToCrawl {
 		domainData, err := c.crawlNextDomain()

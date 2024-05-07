@@ -1,16 +1,15 @@
 package main
 
 import (
-	"bytes"
 	"database/sql"
 	"encoding/json"
 	"fmt"
 	"github.com/LSDM-Group13/lsdm_crawlerhub/api"
 	"github.com/gin-gonic/gin"
 	_ "github.com/go-sql-driver/mysql"
+	"github.com/gocql/gocql"
 	"io"
 	"net/http"
-	"os"
 	"strconv"
 )
 
@@ -163,27 +162,48 @@ func postDomainDataToDB(domainData api.DomainData) error {
 	}
 
 	for url, data := range domainData.Pages {
+		var webPageID int
+		err = db.QueryRow("SELECT WebPageID FROM WebPage WHERE HostID = ?", hostID).Scan(&webPageID)
+		if err != nil {
+			fmt.Println("failed to find HostID")
+			return err
+		}
 		_, err := db.Exec("INSERT INTO WebPage (HostID, WebPageURL, Data) VALUES (?, ?, ?)", hostID, url, data.Text)
 		if err != nil {
 			fmt.Println("failed to insert ", url)
 			return err
 		}
 		for _, img := range data.Images {
-			imageFileName := "hub_image_" + img.Name
-			imageFile, err := os.Create(imageFileName)
+			//imageFileName := "hub_image_" + img.Name
+			//imageFile, err := os.Create(imageFileName)
+			//if err != nil {
+			//	fmt.Println("failed to create image file: ", err)
+			//	continue
+			//}
+			//defer imageFile.Close()
+			//
+			//_, err = io.Copy(imageFile, bytes.NewReader(img.Data))
+			//if err != nil {
+			//	fmt.Println("failed to save image to file: ", err)
+			//	continue
+			//}
+			//
+			//fmt.Println("Image saved to:", imageFileName)
+			imgID := gocql.TimeUUID()
+			cluster := gocql.NewCluster("localhost:9042")
+			cluster.Keyspace = "lsdm_images"
+			session, err := cluster.CreateSession()
 			if err != nil {
-				fmt.Println("failed to create image file: ", err)
-				continue
+				fmt.Println("couldn't create cql session: ", err)
+				return err
 			}
-			defer imageFile.Close()
+			q := session.Query("INSERT INTO lsdm_images.images (image_id, image_data, webpage_id) VALUES (?, ?, ?)",
+				imgID, img.Data, webPageID)
 
-			_, err = io.Copy(imageFile, bytes.NewReader(img.Data))
-			if err != nil {
-				fmt.Println("failed to save image to file: ", err)
-				continue
+			if err := q.Exec(); err != nil {
+				fmt.Println("couldn't execute query: ", err)
+				return err
 			}
-
-			fmt.Println("Image saved to:", imageFileName)
 		}
 	}
 
