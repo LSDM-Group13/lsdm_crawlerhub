@@ -91,7 +91,7 @@ func postCrawlData(c *gin.Context) {
 		return
 	}
 
-	fmt.Println("Received domainData:", domainData)
+	fmt.Println("Received domainData: ", domainData.DomainName)
 	err = postDomainDataToDB(domainData)
 	if err != nil {
 		fmt.Println(err)
@@ -164,13 +164,13 @@ func postDomainDataToDB(domainData api.DomainData) error {
 	}
 
 	for url, data := range domainData.Pages {
-		_, err := db.Exec("INSERT INTO WebPage (HostID, WebPageURL, Data) VALUES (?, ?, ?)", hostID, url, data)
+		_, err := db.Exec("INSERT INTO WebPage (HostID, WebPageURL, Data) VALUES (?, ?, ?)", hostID, url, data.Text)
 		if err != nil {
 			fmt.Println("failed to insert ", url)
 			return err
 		}
 		for _, img := range data.Images {
-			imageFileName := "hub_image_" + strconv.Itoa(rand.Intn(1000)) + "." + ".jpg"
+			imageFileName := "hub_image_" + strconv.Itoa(rand.Intn(1000)) + "." + "jpg"
 			imageFile, err := os.Create(imageFileName)
 			if err != nil {
 				fmt.Println("failed to create image file: ", err)
