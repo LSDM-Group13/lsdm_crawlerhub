@@ -9,7 +9,6 @@ import (
 	"github.com/gin-gonic/gin"
 	_ "github.com/go-sql-driver/mysql"
 	"io"
-	"math/rand"
 	"net/http"
 	"os"
 	"strconv"
@@ -170,7 +169,7 @@ func postDomainDataToDB(domainData api.DomainData) error {
 			return err
 		}
 		for _, img := range data.Images {
-			imageFileName := "hub_image_" + strconv.Itoa(rand.Intn(1000)) + "." + "jpg"
+			imageFileName := "hub_image_" + img.Name
 			imageFile, err := os.Create(imageFileName)
 			if err != nil {
 				fmt.Println("failed to create image file: ", err)
