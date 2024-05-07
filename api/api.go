@@ -2,24 +2,34 @@ package api
 
 import "time"
 
+type Image struct {
+	Name string
+	Data []byte
+}
+
+type PageContent struct {
+	Text   string
+	Images []Image
+}
+
 type DomainData struct {
 	DomainName string
-	Pages      map[string]string
+	Pages      map[string]PageContent
 	TimeStamp  time.Time
 }
 
 func (dd *DomainData) RemoveBlankPages() {
 	for k, v := range dd.Pages {
-		if v == "" {
+		if v.Text == "" {
 			delete(dd.Pages, k)
 		}
 	}
 }
 
-func (dd DomainData) TotalSize() int {
+func (dd *DomainData) TotalSize() int {
 	totalSize := 0
 	for _, p := range dd.Pages {
-		totalSize += len(p)
+		totalSize += len(p.Text)
 	}
 
 	return totalSize

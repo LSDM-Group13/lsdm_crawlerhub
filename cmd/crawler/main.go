@@ -7,8 +7,10 @@ import (
 	"github.com/LSDM-Group13/lsdm_crawlerhub/api"
 	"golang.org/x/net/html"
 	"io"
+	"math/rand"
 	"net/http"
 	"net/url"
+	"os"
 	"regexp"
 	"strconv"
 	"strings"
@@ -19,13 +21,22 @@ type PageData struct {
 	pageUrl  *url.URL
 	textData string
 	links    []*url.URL
+	images   []api.Image
+}
+
+func (pd *PageData) updateText(s string) {
+	if len(s) > 0 {
+		pd.textData += " " + s
+	}
 }
 
 type Crawler struct {
-	hubBaseUrl     string
-	maxDomains     int
-	domainsToCrawl []string
-	domainsCrawled []api.DomainData
+	hubBaseUrl       string
+	maxDomains       int
+	domainsToCrawl   []string
+	domainsCrawled   []api.DomainData
+	maxImagesPerPage int
+	maxLinkDepth     int
 }
 
 func PopLast[T any](s []T) ([]T, T) {
@@ -86,12 +97,39 @@ func (c *Crawler) requestCrawlJobs(numDomains int) error {
 	return nil
 }
 
+func (c *Crawler) crawlLinks(link *url.URL) map[string]api.PageContent {
+	linksFound := []*url.URL{link}
+	pageContentMap := make(map[string]api.PageContent)
+	for linksFollowed := 0; len(linksFound) > 0 && linksFollowed < c.maxLinkDepth; linksFollowed += 1 {
+		linksFound, link = PopLast(linksFound)
+
+		time.Sleep(1 * time.Second)
+		pageData, err := c.crawl(link)
+		if err != nil {
+			fmt.Println("error crawling ", link, ": ", err)
+		}
+
+		pageContentMap[link.String()] = api.PageContent{
+			Text:   pageData.textData,
+			Images: pageData.images,
+		}
+
+		for _, newLink := range pageData.links {
+			if _, ok := pageContentMap[newLink.String()]; !ok && !ContainsLink(linksFound, newLink) {
+				linksFound = append(linksFound, newLink)
+			}
+		}
+	}
+
+	return pageContentMap
+}
+
 func (c *Crawler) crawlNextDomain() (api.DomainData, error) {
 	var domainName string
 	c.domainsToCrawl, domainName = PopLast(c.domainsToCrawl)
 	domainData := api.DomainData{
 		DomainName: domainName,
-		Pages:      map[string]string{},
+		Pages:      make(map[string]api.PageContent),
 		TimeStamp:  time.Now(),
 	}
 
@@ -101,25 +139,7 @@ func (c *Crawler) crawlNextDomain() (api.DomainData, error) {
 		return domainData, err
 	}
 
-	linksFound := []*url.URL{link}
-	for maxFollow := 20; len(linksFound) > 0 && maxFollow > 0; maxFollow -= 1 {
-		linksFound, link = PopLast(linksFound)
-
-		time.Sleep(1 * time.Second)
-		pageData, err := c.crawl(link)
-		if err != nil {
-			domainData.Pages[link.String()] = ""
-			fmt.Println("error crawling ", link, ": ", err)
-			continue
-		}
-
-		domainData.Pages[link.String()] = pageData.textData
-		for _, newLink := range pageData.links {
-			if _, ok := domainData.Pages[newLink.String()]; !ok && !ContainsLink(linksFound, newLink) {
-				linksFound = append(linksFound, newLink)
-			}
-		}
-	}
+	domainData.Pages = c.crawlLinks(link)
 	domainData.RemoveBlankPages()
 	c.domainsCrawled = append(c.domainsCrawled, domainData)
 
@@ -127,7 +147,53 @@ func (c *Crawler) crawlNextDomain() (api.DomainData, error) {
 }
 
 func isValidLink(l string) bool {
-	return !strings.ContainsAny(l, "?#") && !strings.Contains(l, "wp-content") && !strings.HasSuffix(l, ".css")
+	return !strings.ContainsAny(l, "?#") && !strings.Contains(l, "wp-content") && !strings.HasSuffix(l, ".css") && !strings.HasSuffix(l, ".torrent")
+}
+
+func extractText(node *html.Node) string {
+	if containsScriptOrStyleAncestor(node) {
+		return ""
+	}
+
+	leadingWhitespace := regexp.MustCompile(`^\s+`)
+	iFrames := regexp.MustCompile(`<iframe[^>]*>(.*?)<\/iframe>`)
+
+	text := strings.ReplaceAll(node.Data, "\n", "")
+	text = strings.ReplaceAll(text, "\t", "")
+	text = leadingWhitespace.ReplaceAllString(text, "")
+	text = iFrames.ReplaceAllString(text, "")
+
+	return text
+}
+
+func extractLinkText(node *html.Node) string {
+	hrefAttr, attrFound := findAttrByKey(node.Attr, "href")
+	if !attrFound || !isValidLink(hrefAttr.Val) {
+		return ""
+	}
+
+	return hrefAttr.Val
+}
+
+func findAttrByKey(attributes []html.Attribute, key string) (html.Attribute, bool) {
+	for _, attr := range attributes {
+		if attr.Key == key {
+			return attr, true
+		}
+	}
+
+	return html.Attribute{}, false
+}
+
+func (pd *PageData) updateLinks(linkText string) {
+	link, err := pd.pageUrl.Parse(linkText)
+	if err != nil {
+		fmt.Println("failed to parse link: ", pd.pageUrl.String(), " + ", linkText)
+	}
+
+	if link.Host == pd.pageUrl.Host && !ContainsLink(pd.links, link) {
+		pd.links = append(pd.links, link)
+	}
 }
 
 func (c *Crawler) crawl(pageUrl *url.URL) (PageData, error) {
@@ -136,59 +202,71 @@ func (c *Crawler) crawl(pageUrl *url.URL) (PageData, error) {
 		pageUrl:  pageUrl,
 		textData: "",
 		links:    []*url.URL{},
+		images:   make([]api.Image, 0, c.maxImagesPerPage),
 	}
 	root, err := requestPageNodes(pageUrl)
 	if err != nil {
 		return pageData, err
 	}
 
-	leadingWhitespace := regexp.MustCompile(`^\s+`)
-	iFrames := regexp.MustCompile(`<iframe[^>]*>(.*?)<\/iframe>`)
-
+	imagesFound := 0
 	nodeStack := []*html.Node{root}
 	var node *html.Node
 	for len(nodeStack) > 0 {
 		nodeStack, node = PopLast(nodeStack)
-
-		switch nodeType := node.Type; nodeType {
-		case html.TextNode:
-			if !containsScriptOrStyleAncestor(node) {
-				text := strings.ReplaceAll(node.Data, "\n", "")
-				text = strings.ReplaceAll(text, "\t", "")
-				text = leadingWhitespace.ReplaceAllString(text, "")
-				text = iFrames.ReplaceAllString(text, "")
-
-				if len(text) > 0 {
-					pageData.textData += text + " "
-				}
-			}
-		case html.ElementNode:
-			for _, attr := range node.Attr {
-				if attr.Key == "href" {
-					if !isValidLink(attr.Val) {
-						continue
-					}
-
-					link, err := pageUrl.Parse(attr.Val)
-					if err != nil {
-						fmt.Println("failed to parse link: ", pageUrl.String(), " + ", attr.Val)
-						continue
-					}
-
-					if link.Host == pageUrl.Host && !ContainsLink(pageData.links, link) {
-						pageData.links = append(pageData.links, link)
-					}
-				}
-			}
+		for sib := node.FirstChild; sib != nil; sib = sib.NextSibling {
+			nodeStack = append(nodeStack, sib)
 		}
 
-		child := node.FirstChild
-		if child == nil {
+		if node.Type == html.TextNode {
+			pageData.updateText(extractText(node))
+		} else if node.Type != html.ElementNode {
 			continue
 		}
 
-		for sib := child; sib != nil; sib = sib.NextSibling {
-			nodeStack = append(nodeStack, sib)
+		if node.Data == "a" {
+			pageData.updateLinks(extractLinkText(node))
+		} else if node.Data == "img" && imagesFound < c.maxImagesPerPage {
+			srcAttr, attrFound := findAttrByKey(node.Attr, "src")
+			if !attrFound {
+				continue
+			}
+
+			imageUrl, err := pageUrl.Parse(srcAttr.Val)
+			if err != nil {
+				fmt.Println("failed to parse image URL: ", srcAttr.Val)
+				continue
+			}
+
+			resp, err := http.Get(imageUrl.String())
+			if err != nil {
+				fmt.Println("failed to download image: ", err)
+				continue
+			}
+			defer resp.Body.Close()
+			imagesFound += 1
+
+			parts := strings.Split(imageUrl.String(), ".")
+			ext := parts[len(parts)-1]
+			imageFileName := "image_" + strconv.Itoa(rand.Intn(1000)) + "." + ext
+			imageFile, err := os.Create(imageFileName)
+			if err != nil {
+				fmt.Println("failed to create image file: ", err)
+				continue
+			}
+			defer imageFile.Close()
+
+			imgBytes, _ := io.ReadAll(resp.Body)
+			image := api.Image{Name: imageFileName, Data: imgBytes}
+			pageData.images = append(pageData.images, image)
+
+			_, err = io.Copy(imageFile, resp.Body)
+			if err != nil {
+				fmt.Println("failed to save image to file: ", err)
+				continue
+			}
+
+			fmt.Println("Image downloaded and saved to:", imageFileName)
 		}
 	}
 
@@ -267,38 +345,35 @@ func (c *Crawler) postNextDomainData() error {
 
 func main() {
 	c := Crawler{
-		hubBaseUrl:     "http://localhost:8869",
-		maxDomains:     3,
-		domainsToCrawl: nil,
-		domainsCrawled: nil,
+		hubBaseUrl:       "http://localhost:8869",
+		maxDomains:       3,
+		domainsToCrawl:   nil,
+		domainsCrawled:   nil,
+		maxImagesPerPage: 2,
+		maxLinkDepth:     20,
 	}
 
-	c.insertDomain("allstatehealth.com")
-	dd, e := c.crawlNextDomain()
-	if e != nil {
-		fmt.Println(e)
-	}
-	fmt.Println(dd)
+	//c.insertDomain("allstatehealth.com")
+	//dd, e := c.crawlNextDomain()
+	//if e != nil {
+	//	fmt.Println(e)
+	//}
+	//fmt.Println(dd)
 
-	//	for {
-	//numJobs := 5
-	//c.requestCrawlJobs(numJobs)
-	//if len(c.domainsToCrawl) == 0 {
-	//	break
-	//}
-	//for _ = range c.domainsToCrawl {
-	//	domainData, err := c.crawlNextDomain()
-	//	if err != nil {
-	//		fmt.Println("Couldn't crawl: ", err)
-	//	}
-	//	fmt.Println("domain data size (bytes): ", domainData.TotalSize(), "\ndomain name: ", domainData.DomainName)
-	//}
-	//
-	//for _ = range len(c.domainsCrawled) {
-	//	err := c.postNextDomainData()
-	//	if err != nil {
-	//		fmt.Println("couldn't post domain data: ", err)
-	//	}
-	//}
-	//	}
+	numJobs := 5
+	c.requestCrawlJobs(numJobs)
+	for range c.domainsToCrawl {
+		domainData, err := c.crawlNextDomain()
+		if err != nil {
+			fmt.Println("Couldn't crawl: ", err)
+		}
+		fmt.Println("domain data size (bytes): ", domainData.TotalSize(), "\ndomain name: ", domainData.DomainName)
+	}
+
+	for range len(c.domainsCrawled) {
+		err := c.postNextDomainData()
+		if err != nil {
+			fmt.Println("couldn't post domain data: ", err)
+		}
+	}
 }

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -8,7 +9,9 @@ import (
 	"github.com/gin-gonic/gin"
 	_ "github.com/go-sql-driver/mysql"
 	"io"
+	"math/rand"
 	"net/http"
+	"os"
 	"strconv"
 )
 
@@ -166,6 +169,23 @@ func postDomainDataToDB(domainData api.DomainData) error {
 			fmt.Println("failed to insert ", url)
 			return err
 		}
+		for _, img := range data.Images {
+			imageFileName := "hub_image_" + strconv.Itoa(rand.Intn(1000)) + "." + ".jpg"
+			imageFile, err := os.Create(imageFileName)
+			if err != nil {
+				fmt.Println("failed to create image file: ", err)
+				continue
+			}
+			defer imageFile.Close()
+
+			_, err = io.Copy(imageFile, bytes.NewReader(img.Data))
+			if err != nil {
+				fmt.Println("failed to save image to file: ", err)
+				continue
+			}
+
+			fmt.Println("Image saved to:", imageFileName)
+		}
 	}
 
 	_, err = db.Exec("UPDATE Host SET LastCrawledDate = ? WHERE HostID = ?", domainData.TimeStamp, hostID)
@@ -175,6 +195,7 @@ func postDomainDataToDB(domainData api.DomainData) error {
 	}
 
 	fmt.Println("Page data inserted into WebPage table successfully")
+
 	return nil
 }
 
@@ -185,16 +206,5 @@ func main() {
 	err := router.Run("localhost:8869")
 	if err != nil {
 		fmt.Println("error running router: ", err)
-	}
-
-	if err != nil {
-		println(err)
-	}
-
-	domains, err := selectDomains(5)
-	if err != nil {
-		fmt.Println(err)
-	} else {
-		fmt.Println(domains)
 	}
 }
