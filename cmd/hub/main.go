@@ -161,38 +161,24 @@ func postDomainDataToDB(domainData api.DomainData) error {
 		return err
 	}
 
+	cluster := gocql.NewCluster("localhost:9042")
+	cluster.Keyspace = "lsdm_images"
+	session, err := cluster.CreateSession()
 	for url, data := range domainData.Pages {
+		_, err := db.Exec("INSERT INTO WebPage (HostID, WebPageURL, Data) VALUES (?, ?, ?)", hostID, url, data.Text)
+		if err != nil {
+			fmt.Println("failed to insert ", url)
+			return err
+		}
+
 		var webPageID int
 		err = db.QueryRow("SELECT WebPageID FROM WebPage WHERE HostID = ?", hostID).Scan(&webPageID)
 		if err != nil {
 			fmt.Println("failed to find HostID")
 			return err
 		}
-		_, err := db.Exec("INSERT INTO WebPage (HostID, WebPageURL, Data) VALUES (?, ?, ?)", hostID, url, data.Text)
-		if err != nil {
-			fmt.Println("failed to insert ", url)
-			return err
-		}
 		for _, img := range data.Images {
-			//imageFileName := "hub_image_" + img.Name
-			//imageFile, err := os.Create(imageFileName)
-			//if err != nil {
-			//	fmt.Println("failed to create image file: ", err)
-			//	continue
-			//}
-			//defer imageFile.Close()
-			//
-			//_, err = io.Copy(imageFile, bytes.NewReader(img.Data))
-			//if err != nil {
-			//	fmt.Println("failed to save image to file: ", err)
-			//	continue
-			//}
-			//
-			//fmt.Println("Image saved to:", imageFileName)
 			imgID := gocql.TimeUUID()
-			cluster := gocql.NewCluster("localhost:9042")
-			cluster.Keyspace = "lsdm_images"
-			session, err := cluster.CreateSession()
 			if err != nil {
 				fmt.Println("couldn't create cql session: ", err)
 				return err
@@ -206,6 +192,7 @@ func postDomainDataToDB(domainData api.DomainData) error {
 			}
 		}
 	}
+	session.Close()
 
 	_, err = db.Exec("UPDATE Host SET LastCrawledDate = ? WHERE HostID = ?", domainData.TimeStamp, hostID)
 	if err != nil {
