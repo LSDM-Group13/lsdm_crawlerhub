@@ -14,6 +14,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -244,10 +245,14 @@ func (c *Crawler) crawl(pageUrl *url.URL) (PageData, error) {
 				continue
 			}
 			defer resp.Body.Close()
-			imagesFound += 1
 
 			parts := strings.Split(imageUrl.String(), ".")
 			ext := parts[len(parts)-1]
+			if ext == "svg" {
+				continue
+			}
+
+			imagesFound += 1
 			imageFileName := "image_" + strconv.Itoa(rand.Intn(1000)) + "." + ext
 			imageFile, err := os.Create(imageFileName)
 			if err != nil {
@@ -353,22 +358,23 @@ func main() {
 		maxLinkDepth:     20,
 	}
 
-	//c.insertDomain("allstatehealth.com")
-	//dd, e := c.crawlNextDomain()
-	//if e != nil {
-	//	fmt.Println(e)
-	//}
-	//fmt.Println(dd)
-
-	numJobs := 1
+	numJobs := 5
 	c.requestCrawlJobs(numJobs)
+
+	wg := sync.WaitGroup{}
 	for range c.domainsToCrawl {
-		domainData, err := c.crawlNextDomain()
-		if err != nil {
-			fmt.Println("Couldn't crawl: ", err)
-		}
-		fmt.Println("domain data size (bytes): ", domainData.TotalSize(), "\ndomain name: ", domainData.DomainName)
+		wg.Add(1)
+		go func() {
+			domainData, err := c.crawlNextDomain()
+			if err != nil {
+				fmt.Println("Couldn't crawl: ", err)
+			}
+			fmt.Println("domain data size (bytes): ", domainData.TotalSize(), "\ndomain name: ", domainData.DomainName)
+
+			wg.Done()
+		}()
 	}
+	wg.Wait()
 
 	for range len(c.domainsCrawled) {
 		err := c.postNextDomainData()

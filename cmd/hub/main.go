@@ -13,6 +13,24 @@ import (
 	"strconv"
 )
 
+func getCrawlJobs(c *gin.Context) {
+	domainsRequested, exists := c.GetQuery("num_domains")
+	if !exists {
+		domainsRequested = "1"
+	}
+	numDomains, err := strconv.Atoi(domainsRequested)
+	if err != nil {
+		numDomains = 1
+	}
+	newDomains, err := selectDomains(numDomains)
+	if err != nil {
+		fmt.Println("couldn't get jobs from db")
+		return
+	}
+	jobs := api.CrawlJobs{Domains: newDomains}
+	c.IndentedJSON(http.StatusOK, jobs)
+}
+
 func selectDomains(numJobs int) ([]string, error) {
 	var domainsSelected []string
 
@@ -58,24 +76,6 @@ func selectDomains(numJobs int) ([]string, error) {
 	return domainsSelected, nil
 }
 
-func getCrawlJobs(c *gin.Context) {
-	domainsRequested, exists := c.GetQuery("num_domains")
-	if !exists {
-		domainsRequested = "1"
-	}
-	numDomains, err := strconv.Atoi(domainsRequested)
-	if err != nil {
-		numDomains = 1
-	}
-	newDomains, err := selectDomains(numDomains)
-	if err != nil {
-		fmt.Println("couldn't get jobs from db")
-		return
-	}
-	jobs := api.CrawlJobs{Domains: newDomains}
-	c.IndentedJSON(http.StatusOK, jobs)
-}
-
 func postCrawlData(c *gin.Context) {
 	requestBody, err := io.ReadAll(c.Request.Body)
 	if err != nil {
@@ -94,48 +94,6 @@ func postCrawlData(c *gin.Context) {
 	if err != nil {
 		fmt.Println(err)
 	}
-}
-
-func printDBTestData() {
-	dataSourceName := "root@tcp(localhost:3306)/LSDM_Group_Project"
-	db, err := sql.Open("mysql", dataSourceName)
-	if err != nil {
-		fmt.Println("couldn't open")
-		fmt.Println(err)
-	}
-	defer func(db *sql.DB) {
-		err := db.Close()
-		if err != nil {
-			fmt.Println("couldn't close database connection")
-		}
-	}(db)
-	fmt.Println("Connected to MySQL database")
-
-	query := "SELECT WebPageID, HostID, WebPageURL, Data FROM WebPage WHERE Data LIKE ?"
-	rows, err := db.Query(query, "%green%")
-	if err != nil {
-		fmt.Println(err)
-	}
-	defer func(rows *sql.Rows) {
-		err := rows.Close()
-		if err != nil {
-			fmt.Println("couldn't close database connection")
-		}
-	}(rows)
-
-	for rows.Next() {
-		var webpageID, hostID int
-		var webpageURL, data string
-		if err := rows.Scan(&webpageID, &hostID, &webpageURL, &data); err != nil {
-			fmt.Println(err)
-		}
-		fmt.Printf("%d, %d, %s, %s\n", webpageID, hostID, webpageURL, data)
-	}
-	if err := rows.Err(); err != nil {
-		fmt.Println(err)
-	}
-
-	fmt.Println("Search completed successfully")
 }
 
 func postDomainDataToDB(domainData api.DomainData) error {
@@ -164,6 +122,7 @@ func postDomainDataToDB(domainData api.DomainData) error {
 	cluster := gocql.NewCluster("localhost:9042")
 	cluster.Keyspace = "lsdm_images"
 	session, err := cluster.CreateSession()
+	defer session.Close()
 	for url, data := range domainData.Pages {
 		_, err := db.Exec("INSERT INTO WebPage (HostID, WebPageURL, Data) VALUES (?, ?, ?)", hostID, url, data.Text)
 		if err != nil {
@@ -192,7 +151,6 @@ func postDomainDataToDB(domainData api.DomainData) error {
 			}
 		}
 	}
-	session.Close()
 
 	_, err = db.Exec("UPDATE Host SET LastCrawledDate = ? WHERE HostID = ?", domainData.TimeStamp, hostID)
 	if err != nil {
